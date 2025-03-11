@@ -228,7 +228,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 		Term:    r.Term,
 		LogTerm: prevLogTerm,
 		Index:   prevLogIndex,
-		Entries: r.RaftLog.Entries(prevLogIndex, r.RaftLog.LastIndex()+1),
+		Entries: r.RaftLog.Entries(prevLogIndex+1, r.RaftLog.LastIndex()+1),
 		Commit:  r.RaftLog.committed,
 	}
 	r.msgs = append(r.msgs, msg)
@@ -351,11 +351,7 @@ func (r *Raft) becomeLeader() {
 	// append noop and then bcastappend
 	r.Step(pb.Message{
 		MsgType: pb.MessageType_MsgPropose,
-		Entries: []*pb.Entry{{
-			EntryType: pb.EntryType_EntryNormal,
-			Term:      r.Term,
-			Index:     r.RaftLog.LastIndex() + 1,
-		}},
+		Entries: []*pb.Entry{{}},
 	})
 }
 
@@ -412,6 +408,9 @@ func (r *Raft) stepLeader(m pb.Message) error {
 		r.handleAppendEntries(m)
 	case pb.MessageType_MsgPropose:
 		r.handlePropose(m)
+		if len(r.Prs) == 1 {
+			r.RaftLog.CommitTo(r.RaftLog.LastIndex())
+		}
 	case pb.MessageType_MsgAppendResponse:
 		r.handleAppendResponse(m)
 	}
@@ -480,19 +479,14 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		To:      m.From,
 		Term:    r.Term,
 	}
+
 	if m.Term < r.Term {
 		msg.Reject = true
 		r.msgs = append(r.msgs, msg)
 		return
 	}
 	// 如果没有日志,肯定匹配成功
-	matchPrevLogIndex := len(r.RaftLog.entries) == 0
-	for _, entry := range r.RaftLog.entries {
-		if entry.Index == m.Index {
-			matchPrevLogIndex = true
-			break
-		}
-	}
+	matchPrevLogIndex := r.RaftLog.Match(m.Index, m.LogTerm)
 	if !matchPrevLogIndex {
 		msg.Reject = true
 		r.msgs = append(r.msgs, msg)
@@ -563,7 +557,14 @@ func isUpToDate(senderTerm, senderIndex, receiverTerm, receiverIndex uint64) boo
 	}
 }
 
+// 重写 Message.Entry的Term和Index
 func (r *Raft) handlePropose(m pb.Message) {
+	lastIndex := r.RaftLog.LastIndex() + 1
+	term := r.Term
+	for i, ent := range m.Entries {
+		ent.Term = term
+		ent.Index = lastIndex + uint64(i)
+	}
 	r.RaftLog.Append(toEntrySlice(m.Entries))
 	r.bcastAppend()
 }
@@ -589,6 +590,33 @@ func (r *Raft) handleAppendResponse(m pb.Message) {
 	}
 	r.Prs[m.From].Match = m.Index
 	r.Prs[m.From].Next = m.Index + 1
+	// 根据MatchIndex更新CommitIndex
+	check := func(index uint64) bool {
+		term, err := r.RaftLog.Term(index)
+		if err != nil || term != r.Term {
+			return false
+		}
+		matchNum := 1
+		for id, pr := range r.Prs {
+			if id != r.id && pr.Match >= index {
+				matchNum++
+			}
+		}
+		return matchNum >= r.quorum
+	}
+	left := r.RaftLog.committed + 1
+	right := r.RaftLog.LastIndex() + 1
+	for left < right {
+		mid := (left + right) / 2
+		if check(mid) {
+			left = mid + 1
+		} else {
+			right = mid
+		}
+	}
+	if check(left - 1) {
+		r.RaftLog.CommitTo(left - 1)
+	}
 }
 
 // addNode add a new node to raft group

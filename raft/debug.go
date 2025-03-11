@@ -13,7 +13,7 @@ type DebugImpl struct {
 
 func NewDebug() Debug {
 	return &DebugImpl{
-		enable: false,
+		enable: true,
 	}
 }
 

@@ -90,20 +90,36 @@ func (l *RaftLog) maybeCompact() {
 // note, this is one of the test stub functions you need to implement.
 func (l *RaftLog) allEntries() []pb.Entry {
 	// Your Code Here (2A).
-	if len(l.entries) == 0 {
-		return nil
+	ents := make([]pb.Entry, 0)
+	begin, _ := l.storage.FirstIndex()
+	var end uint64
+	if len(l.entries) != 0 {
+		end = l.entries[0].Index
+	} else {
+		end, _ = l.storage.LastIndex()
+		end++
 	}
-	return l.entries[0 : l.entries[len(l.entries)-1].Index-l.stabled]
+	if end > begin {
+		stableEnts, _ := l.storage.Entries(begin, end)
+		ents = append(ents, stableEnts...)
+	}
+	ents = append(ents, l.entries...)
+	return ents
 }
 
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
+	ents := make([]pb.Entry, 0)
 	if len(l.entries) == 0 {
-		return nil
+		return ents
 	}
-	end := l.entries[len(l.entries)-1].Index - l.stabled
-	return l.entries[0:end]
+	for _, ent := range l.entries {
+		if ent.Index > l.stabled {
+			ents = append(ents, ent)
+		}
+	}
+	return ents
 }
 
 // nextEnts returns all the committed but not applied entries
@@ -112,7 +128,21 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	if len(l.entries) == 0 {
 		return nil
 	}
-	return l.entries[l.applied-l.stabled : l.committed-l.stabled]
+	// 如果部分未应用的在storage中,也要取出来
+	if l.applied+1 <= l.entries[0].Index {
+		firstIndex, _ := l.storage.FirstIndex()
+		stableEnts, err := l.storage.Entries(firstIndex, l.entries[0].Index)
+		if err != nil {
+			panic(err)
+		}
+		ents = append(ents, stableEnts...)
+	}
+	for _, ent := range l.entries {
+		if ent.Index > l.applied && ent.Index <= l.committed {
+			ents = append(ents, ent)
+		}
+	}
+	return ents
 }
 
 // return l.entries[begin,end)
@@ -122,8 +152,9 @@ func (l *RaftLog) Entries(begin, end uint64) []*pb.Entry {
 	}
 	ents := make([]*pb.Entry, 0)
 	for _, ent := range l.entries {
-		if begin <= ent.Index && ent.Index < end {
-			ents = append(ents, &ent)
+		e := ent
+		if begin <= e.Index && e.Index < end {
+			ents = append(ents, &e)
 		}
 	}
 	return ents
@@ -179,23 +210,42 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 }
 
 func (l *RaftLog) Append(ents []pb.Entry) {
-	// 在RaftLog中找到第一个和ents[0] Index相等的Entry
-	index := 0
-	for _, entry := range l.entries {
-		if entry.Index == ents[0].Index {
+	if len(ents) == 0 {
+		return
+	}
+	beginIndex := ents[len(ents)-1].Index + 1
+	for _, entry := range ents {
+		if !l.Match(entry.Index, entry.Term) {
+			beginIndex = entry.Index
 			break
 		}
-		index++
 	}
-	if index == 0 {
-		l.entries = make([]pb.Entry, 0)
+	ents = ents[beginIndex-ents[0].Index:]
+	if len(ents) == 0 {
+		return
+	}
+	if len(l.entries) == 0 {
+		l.entries = append(l.entries, ents...)
+		l.stabled = l.entries[0].Index - 1
+		return
+	}
+	after := ents[0].Index
+	if after == l.entries[len(l.entries)-1].Index+1 {
+		l.entries = append(l.entries, ents...)
+	} else if after <= l.entries[0].Index {
+		l.entries = ents
+		l.stabled = l.entries[0].Index - 1
 	} else {
-		l.entries = l.entries[0:index]
+		l.entries = l.entries[:after-l.entries[0].Index]
+		l.stabled = min(l.stabled, l.entries[len(l.entries)-1].Index)
+		l.entries = append(l.entries, ents...)
 	}
-	l.entries = append(l.entries, ents...)
 }
 
 func (l *RaftLog) Exist(index uint64) bool {
+	if len(l.entries) == 0 {
+		return false
+	}
 	if index < l.entries[0].Index || index > l.entries[len(l.entries)-1].Index {
 		return false
 	}
@@ -214,4 +264,9 @@ func (l *RaftLog) CommitTo(i uint64) {
 
 func (l *RaftLog) ApplieTo(i uint64) {
 	l.applied = i
+}
+
+func (l *RaftLog) Match(i, t uint64) bool {
+	term, err := l.Term(i)
+	return err == nil && term == t
 }
