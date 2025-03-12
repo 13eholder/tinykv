@@ -413,6 +413,8 @@ func (r *Raft) stepLeader(m pb.Message) error {
 		}
 	case pb.MessageType_MsgAppendResponse:
 		r.handleAppendResponse(m)
+	case pb.MessageType_MsgHeartbeatResponse:
+		r.handleHeartbeatResponse(m)
 	}
 	return nil
 }
@@ -421,18 +423,16 @@ func (r *Raft) stepCandidate(m pb.Message) error {
 	switch m.MsgType {
 	case pb.MessageType_MsgHup:
 		r.campaign()
-		if r.winElection() {
-			r.becomeLeader()
-		}
+		r.countElection()
 	case pb.MessageType_MsgAppend:
 		r.handleAppendEntries(m)
 	case pb.MessageType_MsgRequestVote:
 		r.handleRequestVote(m)
 	case pb.MessageType_MsgRequestVoteResponse:
 		r.handleRequestVoteResponse(m)
-		if r.winElection() {
-			r.becomeLeader()
-		}
+		r.countElection()
+	case pb.MessageType_MsgHeartbeat:
+		r.handleHeartbeat(m)
 	}
 	return nil
 }
@@ -441,26 +441,37 @@ func (r *Raft) stepFollower(m pb.Message) error {
 	switch m.MsgType {
 	case pb.MessageType_MsgHup:
 		r.campaign()
-		if r.winElection() {
-			r.becomeLeader()
-		}
+		r.countElection()
 	case pb.MessageType_MsgAppend:
 		r.handleAppendEntries(m)
 	case pb.MessageType_MsgRequestVote:
 		r.handleRequestVote(m)
+	case pb.MessageType_MsgHeartbeat:
+		r.handleHeartbeat(m)
 	}
 
 	return nil
 }
 
-func (r *Raft) winElection() bool {
+func (r *Raft) countElection() {
 	voteNum := 0
+	denyNum := 0
 	for _, res := range r.votes {
 		if res {
 			voteNum++
+		} else {
+			denyNum++
 		}
 	}
-	return voteNum >= r.quorum
+	// 胜选
+	if voteNum >= r.quorum {
+		r.becomeLeader()
+		return
+	}
+	// 败选
+	if denyNum > len(r.Prs)-r.quorum {
+		r.becomeFollower(r.Term, None)
+	}
 }
 
 // handleAppendEntries handle AppendEntries RPC request
@@ -471,6 +482,10 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	}
 	if r.isCandidate() && m.Term >= r.Term {
 		r.becomeFollower(m.Term, m.From)
+	}
+
+	if r.isFollower() && m.Term == r.Term && r.Lead == None {
+		r.Lead = m.From
 	}
 
 	msg := pb.Message{
@@ -493,9 +508,14 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		return
 	}
 	if m.Commit > r.RaftLog.committed {
-		lastNewIndex := m.Commit
-		if !r.RaftLog.Exist(m.Entries[len(m.Entries)-1].Index) {
-			lastNewIndex = m.Entries[len(m.Entries)-1].Index
+		lastNewIndex := m.Index
+		if len(m.Entries) != 0 {
+			lastEntry := m.Entries[len(m.Entries)-1]
+			if !r.RaftLog.Match(lastEntry.Index, lastEntry.Term) {
+				lastNewIndex = lastEntry.Index
+			} else {
+				lastNewIndex = min(m.Commit, r.RaftLog.LastIndex())
+			}
 		}
 		r.RaftLog.CommitTo(min(m.Commit, lastNewIndex))
 	}
@@ -507,6 +527,34 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 // handleHeartbeat handle Heartbeat RPC request
 func (r *Raft) handleHeartbeat(m pb.Message) {
 	// Your Code Here (2A).
+	if r.isCandidate() && m.Term >= r.Term {
+		r.becomeFollower(m.Term, m.From)
+	}
+	if !r.isCandidate() && m.Term > r.Term {
+		r.becomeFollower(m.Term, m.From)
+	}
+	if r.isFollower() && m.Term == r.Term && r.Lead == None {
+		r.Lead = m.From
+	}
+	r.electionElapsed = 0
+
+	msg := pb.Message{
+		MsgType: pb.MessageType_MsgHeartbeatResponse,
+		From:    r.id,
+		To:      m.From,
+		Commit:  r.RaftLog.committed,
+	}
+	r.msgs = append(r.msgs, msg)
+}
+
+func (r *Raft) handleHeartbeatResponse(m pb.Message) {
+	if m.Term > r.Term {
+		r.becomeFollower(m.Term, None)
+		return
+	}
+	if m.Commit < r.RaftLog.committed {
+		r.sendAppend(m.From)
+	}
 }
 
 // handleSnapshot handle Snapshot RPC request
@@ -565,7 +613,10 @@ func (r *Raft) handlePropose(m pb.Message) {
 		ent.Term = term
 		ent.Index = lastIndex + uint64(i)
 	}
-	r.RaftLog.Append(toEntrySlice(m.Entries))
+	// Leader直接添加Entry就可以了
+	r.RaftLog.entries = append(r.RaftLog.entries, toEntrySlice(m.Entries)...)
+	r.Prs[r.id].Match = r.RaftLog.LastIndex()
+	r.Prs[r.id].Next = r.Prs[r.id].Match + 1
 	r.bcastAppend()
 }
 
@@ -596,26 +647,24 @@ func (r *Raft) handleAppendResponse(m pb.Message) {
 		if err != nil || term != r.Term {
 			return false
 		}
-		matchNum := 1
-		for id, pr := range r.Prs {
-			if id != r.id && pr.Match >= index {
+		matchNum := 0
+		for _, pr := range r.Prs {
+			if pr.Match >= index {
 				matchNum++
 			}
 		}
 		return matchNum >= r.quorum
 	}
 	left := r.RaftLog.committed + 1
-	right := r.RaftLog.LastIndex() + 1
-	for left < right {
-		mid := (left + right) / 2
-		if check(mid) {
-			left = mid + 1
-		} else {
-			right = mid
+	right := r.RaftLog.LastIndex()
+	for N := right; N >= left; N-- {
+		if r.RaftLog.committed >= N {
+			break
 		}
-	}
-	if check(left - 1) {
-		r.RaftLog.CommitTo(left - 1)
+		if check(N) {
+			r.RaftLog.CommitTo(N)
+			r.bcastAppend()
+		}
 	}
 }
 

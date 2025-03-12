@@ -14,7 +14,9 @@
 
 package raft
 
-import pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+import (
+	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+)
 
 // RaftLog manage the log entries, its struct look like:
 //
@@ -50,7 +52,6 @@ type RaftLog struct {
 	pendingSnapshot *pb.Snapshot
 
 	// Your Data Here (2A).
-	unstabled uint64
 }
 
 // newLog returns log using the given storage. It recovers the log
@@ -69,12 +70,14 @@ func newLog(storage Storage) *RaftLog {
 	if err != nil {
 		panic(err)
 	}
+	entries, _ := storage.Entries(firstIndex, lastIndex+1)
+	if entries != nil {
+		raftLog.entries = entries
+	}
 	// storage的FirstIndex返回的是实际的FirstIndex + 1
 	raftLog.committed = firstIndex - 1
 	raftLog.applied = firstIndex - 1
 	raftLog.stabled = lastIndex
-	// raftLog.Entry的起始Index
-	raftLog.unstabled = lastIndex + 1
 	return raftLog
 }
 
@@ -90,21 +93,7 @@ func (l *RaftLog) maybeCompact() {
 // note, this is one of the test stub functions you need to implement.
 func (l *RaftLog) allEntries() []pb.Entry {
 	// Your Code Here (2A).
-	ents := make([]pb.Entry, 0)
-	begin, _ := l.storage.FirstIndex()
-	var end uint64
-	if len(l.entries) != 0 {
-		end = l.entries[0].Index
-	} else {
-		end, _ = l.storage.LastIndex()
-		end++
-	}
-	if end > begin {
-		stableEnts, _ := l.storage.Entries(begin, end)
-		ents = append(ents, stableEnts...)
-	}
-	ents = append(ents, l.entries...)
-	return ents
+	return l.entries[:]
 }
 
 // unstableEntries return all the unstable entries
@@ -127,15 +116,6 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
 	if len(l.entries) == 0 {
 		return nil
-	}
-	// 如果部分未应用的在storage中,也要取出来
-	if l.applied+1 <= l.entries[0].Index {
-		firstIndex, _ := l.storage.FirstIndex()
-		stableEnts, err := l.storage.Entries(firstIndex, l.entries[0].Index)
-		if err != nil {
-			panic(err)
-		}
-		ents = append(ents, stableEnts...)
 	}
 	for _, ent := range l.entries {
 		if ent.Index > l.applied && ent.Index <= l.committed {
@@ -240,22 +220,6 @@ func (l *RaftLog) Append(ents []pb.Entry) {
 		l.stabled = min(l.stabled, l.entries[len(l.entries)-1].Index)
 		l.entries = append(l.entries, ents...)
 	}
-}
-
-func (l *RaftLog) Exist(index uint64) bool {
-	if len(l.entries) == 0 {
-		return false
-	}
-	if index < l.entries[0].Index || index > l.entries[len(l.entries)-1].Index {
-		return false
-	}
-	// TODO(ZMY):使用二分查找
-	for _, entry := range l.entries {
-		if entry.Index == index {
-			return true
-		}
-	}
-	return false
 }
 
 func (l *RaftLog) CommitTo(i uint64) {
