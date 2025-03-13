@@ -234,3 +234,7 @@ func (l *RaftLog) Match(i, t uint64) bool {
 	term, err := l.Term(i)
 	return err == nil && term == t
 }
+
+func (l *RaftLog) HasPendingSnapshot() bool {
+	return l.pendingSnapshot != nil && !IsEmptySnap(l.pendingSnapshot)
+}
