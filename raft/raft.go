@@ -17,8 +17,9 @@ package raft
 import (
 	"errors"
 	"fmt"
-	"log"
 	"math/rand"
+
+	"github.com/pingcap-incubator/tinykv/log"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
@@ -174,15 +175,23 @@ func newRaft(c *Config) *Raft {
 		panic(err.Error())
 	}
 	// Your Code Here (2A).
-	hs, _, err := c.Storage.InitialState()
+	hs, cs, err := c.Storage.InitialState()
 	if err != nil {
 		panic(err)
 	}
 	raftLog := newLog(c.Storage)
-	prs := make(map[uint64]*Progress, len(c.peers))
-	// 在选举出Leader后重新初始化
-	for _, peer := range c.peers {
-		prs[peer] = &Progress{}
+	// 在选举出Leader后重新初始化 Prs
+	prs := make(map[uint64]*Progress)
+	if len(c.peers) != 0 {
+		prs = make(map[uint64]*Progress, len(c.peers))
+		for _, peer := range c.peers {
+			prs[peer] = &Progress{}
+		}
+	} else if len(cs.Nodes) != 0 {
+		prs = make(map[uint64]*Progress, len(cs.Nodes))
+		for _, node := range cs.Nodes {
+			prs[node] = &Progress{}
+		}
 	}
 
 	raft := &Raft{

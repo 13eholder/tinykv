@@ -7,6 +7,8 @@ import (
 	"github.com/pingcap-incubator/tinykv/proto/pkg/raft_cmdpb"
 )
 
+// Callback 结构体用于处理 Raft 命令的响应
+// 通过 chan struct{} 通知等待者
 type Callback struct {
 	Resp *raft_cmdpb.RaftCmdResponse
 	Txn  *badger.Txn // used for GetSnap

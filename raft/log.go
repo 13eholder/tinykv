@@ -186,7 +186,7 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 		return 0, err
 	}
 
-	panic(err)
+	return 0, err
 }
 
 func (l *RaftLog) Append(ents []pb.Entry) {

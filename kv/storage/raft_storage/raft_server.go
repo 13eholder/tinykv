@@ -25,16 +25,30 @@ import (
 // RaftStorage is an implementation of `Storage` (see tikv/server.go) backed by a Raft node. It is part of a Raft network.
 // By using Raft, reads and writes are consistent with other nodes in the TinyKV instance.
 type RaftStorage struct {
+	// engines 包含两个数据库实例：
+	// - Kv: 存储实际的键值对数据
+	// - Raft: 存储 Raft 相关的元数据（如日志、配置等）
 	engines *engine_util.Engines
-	config  *config.Config
+	// config 存储系统配置参数
+	config *config.Config
 
-	node          *raftstore.Node
-	snapManager   *snap.SnapManager
-	raftRouter    *raftstore.RaftstoreRouter
-	raftSystem    *raftstore.Raftstore
+	// node 处理 Raft 协议的核心逻辑，包括日志复制、选举和成员变更
+	node *raftstore.Node
+	// snapManager 处理 Raft 节点的快照操作，用于状态同步
+	// 特别是在节点需要追赶集群状态时使用
+	snapManager *snap.SnapManager
+	// raftRouter 负责路由和分发 Raft 相关消息到正确的 Raft 节点
+	raftRouter *raftstore.RaftstoreRouter
+	// raftSystem 是 Raft 存储层的核心组件，管理所有 Raft 节点及其交互
+	raftSystem *raftstore.Raftstore
+	// resolveWorker 处理调度器相关的任务，与调度器通信
+	// 负责节点注册、心跳等操作
 	resolveWorker *worker.Worker
-	snapWorker    *worker.Worker
+	// snapWorker 专门处理快照相关的任务，接收和处理来自其他节点的快照数据
+	snapWorker *worker.Worker
 
+	// wg 用于同步和协调各个工作线程
+	// 确保在关闭存储时所有工作线程都能正确结束
 	wg sync.WaitGroup
 }
 

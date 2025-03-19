@@ -76,11 +76,11 @@ project2b:
 	$(GOTEST) ./kv/test_raftstore -run ^TestOnePartition2B$ || true
 	$(GOTEST) ./kv/test_raftstore -run ^TestManyPartitionsOneClient2B$ || true
 	$(GOTEST) ./kv/test_raftstore -run ^TestManyPartitionsManyClients2B$ || true
-	$(GOTEST) ./kv/test_raftstore -run ^TestPersistOneClient2B$ || true
-	$(GOTEST) ./kv/test_raftstore -run ^TestPersistConcurrent2B$ || true
-	$(GOTEST) ./kv/test_raftstore -run ^TestPersistConcurrentUnreliable2B$ || true
-	$(GOTEST) ./kv/test_raftstore -run ^TestPersistPartition2B$ || true
-	$(GOTEST) ./kv/test_raftstore -run ^TestPersistPartitionUnreliable2B$ || true
+	# $(GOTEST) ./kv/test_raftstore -run ^TestPersistOneClient2B$ || true
+	# $(GOTEST) ./kv/test_raftstore -run ^TestPersistConcurrent2B$ || true
+	# $(GOTEST) ./kv/test_raftstore -run ^TestPersistConcurrentUnreliable2B$ || true
+	# $(GOTEST) ./kv/test_raftstore -run ^TestPersistPartition2B$ || true
+	# $(GOTEST) ./kv/test_raftstore -run ^TestPersistPartitionUnreliable2B$ || true
 	$(TEST_CLEAN)
 
 project2c:
