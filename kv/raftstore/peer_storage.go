@@ -342,10 +342,19 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	// Your Code Here (2B/2C).
 	res := new(ApplySnapResult)
 	raftWb := new(engine_util.WriteBatch)
-	ps.Append(ready.Entries, raftWb)
-	ps.raftState.HardState = &ready.HardState
-	raftWb.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState)
-	raftWb.WriteToDB(ps.Engines.Raft)
+	if err := ps.Append(ready.Entries, raftWb); err != nil {
+		panic(err)
+	}
+	// 为空的状态说明和上一次相比没有变化,所以不需要修改
+	if !raft.IsEmptyHardState(ready.HardState) {
+		ps.raftState.HardState = &ready.HardState
+	}
+	if err := raftWb.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState); err != nil {
+		panic(err)
+	}
+	if err := raftWb.WriteToDB(ps.Engines.Raft); err != nil {
+		panic(err)
+	}
 	return res, nil
 }
 

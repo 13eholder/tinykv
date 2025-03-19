@@ -27,7 +27,7 @@ dev: default test
 test:
 	@echo "Running tests in native mode."
 	@export TZ='Asia/Shanghai'; \
-	LOG_LEVEL=fatal $(GOTEST) -cover $(PACKAGES)
+	LOG_LEVEL=debug $(GOTEST) -cover $(PACKAGES)
 
 CURDIR := $(shell pwd)
 export PATH := $(CURDIR)/bin/:$(PATH)
@@ -76,11 +76,11 @@ project2b:
 	$(GOTEST) ./kv/test_raftstore -run ^TestOnePartition2B$ || true
 	$(GOTEST) ./kv/test_raftstore -run ^TestManyPartitionsOneClient2B$ || true
 	$(GOTEST) ./kv/test_raftstore -run ^TestManyPartitionsManyClients2B$ || true
-	# $(GOTEST) ./kv/test_raftstore -run ^TestPersistOneClient2B$ || true
-	# $(GOTEST) ./kv/test_raftstore -run ^TestPersistConcurrent2B$ || true
-	# $(GOTEST) ./kv/test_raftstore -run ^TestPersistConcurrentUnreliable2B$ || true
-	# $(GOTEST) ./kv/test_raftstore -run ^TestPersistPartition2B$ || true
-	# $(GOTEST) ./kv/test_raftstore -run ^TestPersistPartitionUnreliable2B$ || true
+	$(GOTEST) ./kv/test_raftstore -run ^TestPersistOneClient2B$ || true
+	$(GOTEST) ./kv/test_raftstore -run ^TestPersistConcurrent2B$ || true
+	$(GOTEST) ./kv/test_raftstore -run ^TestPersistConcurrentUnreliable2B$ || true
+	$(GOTEST) ./kv/test_raftstore -run ^TestPersistPartition2B$ || true
+	$(GOTEST) ./kv/test_raftstore -run ^TestPersistPartitionUnreliable2B$ || true
 	$(TEST_CLEAN)
 
 project2c:

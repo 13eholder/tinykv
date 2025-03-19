@@ -153,6 +153,7 @@ func (rn *RawNode) Step(m pb.Message) error {
 }
 
 // Ready returns the current point-in-time state of this RawNode.
+// 如果Ready的某个字段为空,说明和之前一致,不需要变化
 func (rn *RawNode) Ready() Ready {
 	// Your Code Here (2A).
 	rd := Ready{
