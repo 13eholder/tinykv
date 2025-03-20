@@ -20,7 +20,6 @@ import (
 	"math/rand"
 
 	"github.com/pingcap-incubator/tinykv/log"
-
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
@@ -226,9 +225,10 @@ func (r *Raft) sendAppend(to uint64) bool {
 	// Next指向下一个待添加的日志项,复制日志时需要有相同的匹配项才可以
 	prevLogIndex := r.Prs[to].Next - 1
 	prevLogTerm, err := r.RaftLog.Term(prevLogIndex)
-	if err != nil {
-		log.Fatalf("sendAppend failed to get prevLogTerm when prevLogIndex == %d\n", prevLogIndex)
-		panic(err)
+	// 对应的日志被压缩,此时需要发送快照
+	if err != nil || r.RaftLog.FirstIndex() > prevLogIndex+1 {
+		r.sendSnapshot(to)
+		return false
 	}
 	msg := pb.Message{
 		MsgType: pb.MessageType_MsgAppend,
@@ -242,6 +242,32 @@ func (r *Raft) sendAppend(to uint64) bool {
 	}
 	r.msgs = append(r.msgs, msg)
 	return true
+}
+
+func (r *Raft) sendSnapshot(to uint64) {
+	var snap pb.Snapshot
+	var err error
+	if !IsEmptySnap(r.RaftLog.pendingSnapshot) {
+		snap = *r.RaftLog.pendingSnapshot
+	} else {
+		snap, err = r.RaftLog.storage.Snapshot()
+	}
+	// snapWorker在异步生成snapShot
+	if err != nil {
+		log.Info(err)
+		return
+	}
+	if r.RaftLog.pendingSnapshot == nil {
+		r.RaftLog.pendingSnapshot = &snap
+	}
+	msg := pb.Message{
+		MsgType:  pb.MessageType_MsgSnapshot,
+		From:     r.id,
+		To:       to,
+		Term:     r.Term,
+		Snapshot: &snap,
+	}
+	r.msgs = append(r.msgs, msg)
 }
 
 // sendHeartbeat sends a heartbeat RPC to the given peer.
@@ -424,6 +450,13 @@ func (r *Raft) stepLeader(m pb.Message) error {
 		r.handleAppendResponse(m)
 	case pb.MessageType_MsgHeartbeatResponse:
 		r.handleHeartbeatResponse(m)
+	case pb.MessageType_MsgHeartbeat:
+		r.handleHeartbeat(m)
+	case pb.MessageType_MsgRequestVoteResponse:
+	case pb.MessageType_MsgHup:
+		// ignore
+	default:
+		log.Panic(m.String())
 	}
 	return nil
 }
@@ -442,6 +475,13 @@ func (r *Raft) stepCandidate(m pb.Message) error {
 		r.countElection()
 	case pb.MessageType_MsgHeartbeat:
 		r.handleHeartbeat(m)
+	case pb.MessageType_MsgSnapshot:
+		r.handleSnapshot(m)
+	case pb.MessageType_MsgPropose:
+	case pb.MessageType_MsgBeat:
+		// ignore
+	default:
+		log.Panic(m.String())
 	}
 	return nil
 }
@@ -457,6 +497,15 @@ func (r *Raft) stepFollower(m pb.Message) error {
 		r.handleRequestVote(m)
 	case pb.MessageType_MsgHeartbeat:
 		r.handleHeartbeat(m)
+	case pb.MessageType_MsgSnapshot:
+		r.handleSnapshot(m)
+	case pb.MessageType_MsgRequestVoteResponse:
+	case pb.MessageType_MsgAppendResponse:
+	case pb.MessageType_MsgHeartbeatResponse:
+	case pb.MessageType_MsgBeat:
+		// ignore
+	default:
+		log.Panic(m.String())
 	}
 
 	return nil
@@ -569,6 +618,48 @@ func (r *Raft) handleHeartbeatResponse(m pb.Message) {
 // handleSnapshot handle Snapshot RPC request
 func (r *Raft) handleSnapshot(m pb.Message) {
 	// Your Code Here (2C).
+	if !r.isCandidate() && m.Term > r.Term {
+		r.becomeFollower(m.Term, m.From)
+	}
+	if r.isCandidate() && m.Term >= r.Term {
+		r.becomeFollower(m.Term, m.From)
+	}
+
+	if r.isFollower() && m.Term == r.Term && r.Lead == None {
+		r.Lead = m.From
+	}
+
+	msg := pb.Message{
+		MsgType: pb.MessageType_MsgAppendResponse,
+		From:    r.id,
+		To:      m.From,
+		Term:    r.Term,
+	}
+	md := m.Snapshot.Metadata
+	// 发送拒绝信息,让信息发送方同步状态
+	if m.Term < r.Term || md.Index < r.RaftLog.committed || md.Index < r.RaftLog.FirstIndex() {
+		msg.Reject = true
+		r.msgs = append(r.msgs, msg)
+		return
+	}
+	// 同步状态
+	ents := []pb.Entry{{
+		Index: md.Index,
+		Term:  md.Term,
+	}}
+	r.RaftLog.Append(ents)
+	r.RaftLog.CommitTo(md.Index)
+	r.RaftLog.ApplieTo(md.Index)
+	r.RaftLog.pendingSnapshot = m.Snapshot
+	msg.Index = md.Index
+	// 修改confState
+	r.Prs = make(map[uint64]*Progress)
+	for _, peerId := range md.ConfState.Nodes {
+		r.Prs[peerId] = &Progress{}
+	}
+	r.quorum = len(r.Prs)/2 + 1
+	// 发送信息
+	r.msgs = append(r.msgs, msg)
 }
 
 func (r *Raft) handleRequestVote(m pb.Message) {
@@ -698,6 +789,9 @@ func (r *Raft) advance(rd Ready) {
 	if len(rd.CommittedEntries) > 0 {
 		r.RaftLog.applied = rd.CommittedEntries[len(rd.CommittedEntries)-1].Index
 	}
+	r.RaftLog.maybeCompact()
+	r.RaftLog.pendingSnapshot = nil
+	r.msgs = nil
 }
 
 // addNode add a new node to raft group

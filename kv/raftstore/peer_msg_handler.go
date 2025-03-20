@@ -50,13 +50,13 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		rd := d.RaftGroup.Ready()
 		d.peerStorage.SaveReadyState(&rd)
 		d.Send(d.ctx.trans, rd.Messages)
-		kvWb := new(engine_util.WriteBatch)
+		kvWB := new(engine_util.WriteBatch)
 		for _, entry := range rd.CommittedEntries {
 			d.peerStorage.applyState.AppliedIndex = entry.Index
-			d.process(kvWb, entry)
+			d.process(kvWB, entry)
+			kvWB.SetMeta(meta.ApplyStateKey(d.regionId), d.peerStorage.applyState)
+			kvWB.WriteToDB(d.ctx.engine.Kv)
 		}
-		kvWb.SetMeta(meta.ApplyStateKey(d.regionId), d.peerStorage.applyState)
-		kvWb.WriteToDB(d.ctx.engine.Kv)
 		d.RaftGroup.Advance(rd)
 	}
 }
@@ -68,9 +68,9 @@ func (d *peerMsgHandler) process(kvWB *engine_util.WriteBatch, entry eraftpb.Ent
 		panic(err)
 	}
 	resp := newCmdResp()
-	resp.Responses = make([]*raft_cmdpb.Response, 0)
 
 	if len(req.Requests) != 0 {
+		resp.Responses = make([]*raft_cmdpb.Response, 0)
 		for _, req := range req.Requests {
 			switch req.CmdType {
 			case raft_cmdpb.CmdType_Get:
@@ -100,7 +100,6 @@ func (d *peerMsgHandler) process(kvWB *engine_util.WriteBatch, entry eraftpb.Ent
 					Delete:  &raft_cmdpb.DeleteResponse{},
 				})
 			case raft_cmdpb.CmdType_Snap:
-				//TODO(ZMY)
 				resp.Responses = append(resp.Responses, &raft_cmdpb.Response{
 					CmdType: raft_cmdpb.CmdType_Snap,
 					Snap: &raft_cmdpb.SnapResponse{
@@ -108,27 +107,52 @@ func (d *peerMsgHandler) process(kvWB *engine_util.WriteBatch, entry eraftpb.Ent
 					},
 				})
 			}
-			// 响应proposal,根据Raft一致性,当前的entry需要对应proposal[0]
-			// 如果没有,说明发生了日志重写,之前的proposal过期了
-			for len(d.proposals) > 0 {
-				p := d.proposals[0]
-				if p.index == entry.Index && p.term == entry.Term {
-					if req.CmdType == raft_cmdpb.CmdType_Snap {
-						p.cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
-					}
-					p.cb.Done(resp)
-					d.proposals = d.proposals[1:]
-					break
-				} else {
-					p.cb.Done(ErrResp(&util.ErrStaleCommand{}))
-					d.proposals = d.proposals[1:]
-				}
-			}
+			d.handleProposal(entry, resp, req.CmdType == raft_cmdpb.CmdType_Snap)
 		}
-	} else if req.AdminRequest != nil {
-		log.Panic("not support yet")
 	}
+	if req.AdminRequest != nil {
+		switch req.AdminRequest.CmdType {
+		case raft_cmdpb.AdminCmdType_CompactLog:
+			compact := req.AdminRequest.CompactLog
+			if compact.CompactIndex >= d.peerStorage.truncatedIndex() {
+				// 在这里只需要修改applyState,applyState会在外层的handleRaftReady中持久化
+				d.peerStorage.applyState.TruncatedState.Index = compact.CompactIndex
+				d.peerStorage.applyState.TruncatedState.Term = compact.CompactTerm
+				kvWB.SetMeta(meta.ApplyStateKey(d.regionId), d.peerStorage.applyState)
+				d.ScheduleCompactLog(compact.CompactIndex)
+			}
+			resp.AdminResponse = &raft_cmdpb.AdminResponse{
+				CmdType:    raft_cmdpb.AdminCmdType_CompactLog,
+				CompactLog: &raft_cmdpb.CompactLogResponse{},
+			}
+		case raft_cmdpb.AdminCmdType_TransferLeader:
+			log.Panic("not support yet")
+		case raft_cmdpb.AdminCmdType_Split:
+			log.Panic("not support yet")
+		case raft_cmdpb.AdminCmdType_ChangePeer:
+			log.Panic("not support yet")
+		}
+		d.handleProposal(entry, resp, false)
+	}
+}
 
+func (d *peerMsgHandler) handleProposal(entry eraftpb.Entry, resp *raft_cmdpb.RaftCmdResponse, snap bool) {
+	// 响应proposal,根据Raft一致性,当前的entry需要对应proposal[0]
+	// 如果没有,说明发生了日志重写,之前的proposal过期了
+	for len(d.proposals) > 0 {
+		p := d.proposals[0]
+		if p.index == entry.Index && p.term == entry.Term {
+			if snap {
+				p.cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
+			}
+			p.cb.Done(resp)
+			d.proposals = d.proposals[1:]
+			break
+		} else {
+			p.cb.Done(ErrResp(&util.ErrStaleCommand{}))
+			d.proposals = d.proposals[1:]
+		}
+	}
 }
 
 func (d *peerMsgHandler) HandleMsg(msg message.Msg) {
@@ -257,6 +281,7 @@ func (d *peerMsgHandler) onRaftBaseTick() {
 	d.ticker.schedule(PeerTickRaft)
 }
 
+// RaftGcWorker异步地从raftDb中删除元数据
 func (d *peerMsgHandler) ScheduleCompactLog(truncatedIndex uint64) {
 	raftLogGCTask := &runner.RaftLogGCTask{
 		RaftEngine: d.ctx.engine.Raft,

@@ -86,6 +86,9 @@ func newLog(storage Storage) *RaftLog {
 // grow unlimitedly in memory
 func (l *RaftLog) maybeCompact() {
 	// Your Code Here (2C).
+	if len(l.entries) != 0 {
+		l.entries = l.entries[l.stabled-l.entries[0].Index:]
+	}
 }
 
 // allEntries return all the entries not compacted.
@@ -237,4 +240,11 @@ func (l *RaftLog) Match(i, t uint64) bool {
 
 func (l *RaftLog) HasPendingSnapshot() bool {
 	return l.pendingSnapshot != nil && !IsEmptySnap(l.pendingSnapshot)
+}
+
+func (l *RaftLog) FirstIndex() uint64 {
+	if len(l.entries) != 0 {
+		return l.entries[0].Index
+	}
+	return 0
 }

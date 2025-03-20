@@ -311,12 +311,32 @@ func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.Write
 	if len(entries) == 0 {
 		return nil
 	}
-	lastEntry := entries[len(entries)-1]
-	ps.raftState.LastIndex = lastEntry.Index
-	ps.raftState.LastTerm = lastEntry.Term
+	// 过期是相对于ps应用上一次快照到当前尚未应用的Entry而言
+	firstIndex, _ := ps.FirstIndex()
+	lastIndex, _ := ps.LastIndex()
+	entryFirstIndex := entries[0].Index
+	entryLastIndex := entries[len(entries)-1].Index
+
+	if entryLastIndex < firstIndex {
+		return nil
+	}
+
+	if entryFirstIndex < firstIndex {
+		entries = entries[firstIndex-entryFirstIndex:]
+	}
+
 	for _, ent := range entries {
 		raftWB.SetMeta(meta.RaftLogKey(ps.region.Id, ent.Index), &ent)
 	}
+	for i := entryLastIndex + 1; i <= lastIndex; i++ {
+		raftWB.DeleteMeta(meta.RaftLogKey(ps.region.Id, i))
+	}
+
+	if len(entries) > 0 {
+		ps.raftState.LastIndex = entries[len(entries)-1].Index
+		ps.raftState.LastTerm = entries[len(entries)-1].Term
+	}
+
 	return nil
 }
 
@@ -332,7 +352,38 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 	// and send RegionTaskApply task to region worker through ps.regionSched, also remember call ps.clearMeta
 	// and ps.clearExtraData to delete stale data
 	// Your Code Here (2C).
-	return nil, nil
+	if ps.isInitialized() {
+		ps.clearMeta(kvWB, raftWB)
+		ps.clearExtraData(snapData.Region)
+	}
+
+	ps.raftState.LastIndex = snapshot.Metadata.Index
+	ps.raftState.LastTerm = snapshot.Metadata.Term
+	raftWB.SetMeta(meta.RaftStateKey(snapData.Region.Id), ps.raftState)
+
+	ps.applyState.TruncatedState.Index = snapshot.Metadata.Index
+	ps.applyState.TruncatedState.Term = snapshot.Metadata.Term
+	ps.applyState.AppliedIndex = snapshot.Metadata.Index
+	kvWB.SetMeta(meta.ApplyStateKey(snapData.Region.Id), ps.applyState)
+
+	ps.snapState.StateType = snap.SnapState_Applying
+
+	ch := make(chan bool, 1)
+	ps.regionSched <- &runner.RegionTaskApply{
+		RegionId: ps.region.Id,
+		SnapMeta: snapshot.Metadata,
+		StartKey: snapData.Region.StartKey,
+		EndKey:   snapData.Region.EndKey,
+		Notifier: ch,
+	}
+	// 等待
+	<-ch
+
+	res := &ApplySnapResult{
+		PrevRegion: ps.region,
+		Region:     snapData.Region,
+	}
+	return res, nil
 }
 
 // Save memory states to disk.
@@ -340,19 +391,33 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, error) {
 	// Hint: you may call `Append()` and `ApplySnapshot()` in this function
 	// Your Code Here (2B/2C).
+	var err error
 	res := new(ApplySnapResult)
-	raftWb := new(engine_util.WriteBatch)
-	if err := ps.Append(ready.Entries, raftWb); err != nil {
+	kvWB := new(engine_util.WriteBatch)
+	raftWB := new(engine_util.WriteBatch)
+
+	if !raft.IsEmptySnap(&ready.Snapshot) {
+		log.Infof("when apply snapshot,ready.entry_size = %d", len(ready.Entries))
+		res, err = ps.ApplySnapshot(&ready.Snapshot, kvWB, raftWB)
+		if err != nil {
+			panic(err)
+		}
+	}
+
+	if err = ps.Append(ready.Entries, raftWB); err != nil {
 		panic(err)
 	}
 	// 为空的状态说明和上一次相比没有变化,所以不需要修改
 	if !raft.IsEmptyHardState(ready.HardState) {
 		ps.raftState.HardState = &ready.HardState
 	}
-	if err := raftWb.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState); err != nil {
+	if err = raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState); err != nil {
 		panic(err)
 	}
-	if err := raftWb.WriteToDB(ps.Engines.Raft); err != nil {
+	if err = raftWB.WriteToDB(ps.Engines.Raft); err != nil {
+		panic(err)
+	}
+	if err = kvWB.WriteToDB(ps.Engines.Kv); err != nil {
 		panic(err)
 	}
 	return res, nil
