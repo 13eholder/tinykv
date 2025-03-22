@@ -180,17 +180,12 @@ func newRaft(c *Config) *Raft {
 	}
 	raftLog := newLog(c.Storage)
 	// 在选举出Leader后重新初始化 Prs
+	if len(c.peers) == 0 {
+		c.peers = cs.Nodes
+	}
 	prs := make(map[uint64]*Progress)
-	if len(c.peers) != 0 {
-		prs = make(map[uint64]*Progress, len(c.peers))
-		for _, peer := range c.peers {
-			prs[peer] = &Progress{}
-		}
-	} else if len(cs.Nodes) != 0 {
-		prs = make(map[uint64]*Progress, len(cs.Nodes))
-		for _, node := range cs.Nodes {
-			prs[node] = &Progress{}
-		}
+	for _, peer := range c.peers {
+		prs[peer] = &Progress{}
 	}
 
 	raft := &Raft{
@@ -256,9 +251,6 @@ func (r *Raft) sendSnapshot(to uint64) {
 	if err != nil {
 		log.Info(err)
 		return
-	}
-	if r.RaftLog.pendingSnapshot == nil {
-		r.RaftLog.pendingSnapshot = &snap
 	}
 	msg := pb.Message{
 		MsgType:  pb.MessageType_MsgSnapshot,
@@ -452,9 +444,12 @@ func (r *Raft) stepLeader(m pb.Message) error {
 		r.handleHeartbeatResponse(m)
 	case pb.MessageType_MsgHeartbeat:
 		r.handleHeartbeat(m)
+	case pb.MessageType_MsgSnapshot:
+		r.handleSnapshot(m)
 	case pb.MessageType_MsgRequestVoteResponse:
 	case pb.MessageType_MsgHup:
 		// ignore
+		// log.Infof("node %d state %s ignore msg %+v", r.id, r.State.String(), m)
 	default:
 		log.Panic(m.String())
 	}
@@ -464,6 +459,9 @@ func (r *Raft) stepLeader(m pb.Message) error {
 func (r *Raft) stepCandidate(m pb.Message) error {
 	switch m.MsgType {
 	case pb.MessageType_MsgHup:
+		if _, ok := r.Prs[r.id]; !ok {
+			return nil
+		}
 		r.campaign()
 		r.countElection()
 	case pb.MessageType_MsgAppend:
@@ -479,6 +477,7 @@ func (r *Raft) stepCandidate(m pb.Message) error {
 		r.handleSnapshot(m)
 	case pb.MessageType_MsgPropose:
 	case pb.MessageType_MsgBeat:
+		// log.Infof("node %d state %s ignore msg %+v", r.id, r.State.String(), m)
 		// ignore
 	default:
 		log.Panic(m.String())
@@ -489,6 +488,9 @@ func (r *Raft) stepCandidate(m pb.Message) error {
 func (r *Raft) stepFollower(m pb.Message) error {
 	switch m.MsgType {
 	case pb.MessageType_MsgHup:
+		if _, ok := r.Prs[r.id]; !ok {
+			return nil
+		}
 		r.campaign()
 		r.countElection()
 	case pb.MessageType_MsgAppend:
@@ -503,6 +505,7 @@ func (r *Raft) stepFollower(m pb.Message) error {
 	case pb.MessageType_MsgAppendResponse:
 	case pb.MessageType_MsgHeartbeatResponse:
 	case pb.MessageType_MsgBeat:
+		// log.Infof("node %d state %s ignore msg %+v", r.id, r.State.String(), m)
 		// ignore
 	default:
 		log.Panic(m.String())
@@ -642,22 +645,22 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 		r.msgs = append(r.msgs, msg)
 		return
 	}
+	// 修改confState
+	if md.ConfState != nil {
+		r.Prs = make(map[uint64]*Progress)
+		for _, peerId := range md.ConfState.Nodes {
+			r.Prs[peerId] = &Progress{}
+		}
+		r.quorum = len(r.Prs)/2 + 1
+	}
 	// 同步状态
-	ents := []pb.Entry{{
+	r.RaftLog.AppendSnap(pb.Entry{
 		Index: md.Index,
 		Term:  md.Term,
-	}}
-	r.RaftLog.Append(ents)
-	r.RaftLog.CommitTo(md.Index)
-	r.RaftLog.ApplieTo(md.Index)
+	})
 	r.RaftLog.pendingSnapshot = m.Snapshot
 	msg.Index = md.Index
-	// 修改confState
-	r.Prs = make(map[uint64]*Progress)
-	for _, peerId := range md.ConfState.Nodes {
-		r.Prs[peerId] = &Progress{}
-	}
-	r.quorum = len(r.Prs)/2 + 1
+
 	// 发送信息
 	r.msgs = append(r.msgs, msg)
 }

@@ -48,14 +48,20 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	// Your Code Here (2B).
 	if d.RaftGroup.HasReady() {
 		rd := d.RaftGroup.Ready()
-		d.peerStorage.SaveReadyState(&rd)
+		if _, err := d.peerStorage.SaveReadyState(&rd); err != nil {
+			panic(err)
+		}
 		d.Send(d.ctx.trans, rd.Messages)
-		kvWB := new(engine_util.WriteBatch)
 		for _, entry := range rd.CommittedEntries {
+			kvWB := new(engine_util.WriteBatch)
 			d.peerStorage.applyState.AppliedIndex = entry.Index
 			d.process(kvWB, entry)
-			kvWB.SetMeta(meta.ApplyStateKey(d.regionId), d.peerStorage.applyState)
-			kvWB.WriteToDB(d.ctx.engine.Kv)
+			if err := kvWB.SetMeta(meta.ApplyStateKey(d.regionId), d.peerStorage.applyState); err != nil {
+				panic(err)
+			}
+			if err := kvWB.WriteToDB(d.ctx.engine.Kv); err != nil {
+				panic(err)
+			}
 		}
 		d.RaftGroup.Advance(rd)
 	}
@@ -70,6 +76,7 @@ func (d *peerMsgHandler) process(kvWB *engine_util.WriteBatch, entry eraftpb.Ent
 	resp := newCmdResp()
 
 	if len(req.Requests) != 0 {
+		// log.Infof("process request %s", req.Requests[0].CmdType.String())
 		resp.Responses = make([]*raft_cmdpb.Response, 0)
 		for _, req := range req.Requests {
 			switch req.CmdType {
@@ -110,11 +117,14 @@ func (d *peerMsgHandler) process(kvWB *engine_util.WriteBatch, entry eraftpb.Ent
 			d.handleProposal(entry, resp, req.CmdType == raft_cmdpb.CmdType_Snap)
 		}
 	}
+
 	if req.AdminRequest != nil {
+		// log.Infof("%s process %s ", d.Tag, req.AdminRequest.CmdType.String())
 		switch req.AdminRequest.CmdType {
 		case raft_cmdpb.AdminCmdType_CompactLog:
 			compact := req.AdminRequest.CompactLog
 			if compact.CompactIndex >= d.peerStorage.truncatedIndex() {
+				// log.Infof("%s process CompactLog cIndex %d,cTerm%d", d.Tag, compact.CompactIndex, compact.CompactTerm)
 				// 在这里只需要修改applyState,applyState会在外层的handleRaftReady中持久化
 				d.peerStorage.applyState.TruncatedState.Index = compact.CompactIndex
 				d.peerStorage.applyState.TruncatedState.Term = compact.CompactTerm
@@ -224,17 +234,9 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		return
 	}
 	// Your Code Here (2B).
-	resp := newCmdResp()
-	if len(msg.Requests) == 0 {
-		cb.Done(resp)
-		return
-	}
-	if !d.IsLeader() {
-		BindRespError(resp, &util.ErrNotLeader{})
-		cb.Done(resp)
-		return
-	}
-	// 把请求序列化为Entry.Data,交由Raft模块实现一致,等到Raft模块提交后,再统一应用
+	// preProposeRaftCommand 已经处理了非Leader的情况
+
+	// 把请求序列化为 Entry.Data,交由Raft模块实现一致,等到Raft模块提交后,再统一应用
 	data, err := msg.Marshal()
 	if err != nil {
 		panic(err)

@@ -15,6 +15,8 @@
 package raft
 
 import (
+	"fmt"
+
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
@@ -86,9 +88,28 @@ func newLog(storage Storage) *RaftLog {
 // grow unlimitedly in memory
 func (l *RaftLog) maybeCompact() {
 	// Your Code Here (2C).
-	if len(l.entries) != 0 {
-		l.entries = l.entries[l.stabled-l.entries[0].Index:]
+	i, _ := l.storage.FirstIndex()
+	if len(l.entries) == 0 {
+		return
 	}
+	if i < l.FirstIndex() {
+		return
+	}
+	if i > l.LastIndex() {
+		l.entries = nil
+		return
+	}
+	l.entries = l.entries[i-l.FirstIndex():]
+}
+
+func (l *RaftLog) debugInfo() string {
+	s := fmt.Sprintf("commited %d,applied %d, stabled %d", l.committed, l.applied, l.stabled)
+	s += ",Entries["
+	for _, e := range l.entries {
+		s += fmt.Sprintf("{Term:%d,Index:%d}", e.Term, e.Index)
+	}
+	s += "]"
+	return s
 }
 
 // allEntries return all the entries not compacted.
@@ -223,6 +244,23 @@ func (l *RaftLog) Append(ents []pb.Entry) {
 		l.stabled = min(l.stabled, l.entries[len(l.entries)-1].Index)
 		l.entries = append(l.entries, ents...)
 	}
+}
+
+func (l *RaftLog) AppendSnap(ent pb.Entry) {
+	if len(l.entries) > 0 {
+		if ent.Index >= l.LastIndex() {
+			l.entries = nil
+		} else if ent.Index > l.FirstIndex() {
+			l.entries = l.entries[ent.Index-l.FirstIndex()+1:]
+		}
+	}
+	if l.LastIndex() < ent.Index {
+		l.entries = append(l.entries, ent)
+	}
+
+	l.stabled = ent.Index
+	l.committed = ent.Index
+	l.applied = ent.Index
 }
 
 func (l *RaftLog) CommitTo(i uint64) {

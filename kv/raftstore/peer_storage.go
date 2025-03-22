@@ -366,6 +366,8 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 	ps.applyState.AppliedIndex = snapshot.Metadata.Index
 	kvWB.SetMeta(meta.ApplyStateKey(snapData.Region.Id), ps.applyState)
 
+	meta.WriteRegionState(kvWB, snapData.Region, rspb.PeerState_Normal)
+
 	ps.snapState.StateType = snap.SnapState_Applying
 
 	ch := make(chan bool, 1)
@@ -377,7 +379,10 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 		Notifier: ch,
 	}
 	// 等待
-	<-ch
+	ok := <-ch
+	if !ok {
+		return nil, nil
+	}
 
 	res := &ApplySnapResult{
 		PrevRegion: ps.region,
@@ -397,7 +402,7 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	raftWB := new(engine_util.WriteBatch)
 
 	if !raft.IsEmptySnap(&ready.Snapshot) {
-		log.Infof("when apply snapshot,ready.entry_size = %d", len(ready.Entries))
+		// log.Infof("when apply snapshot,ready.entry_size = %d", len(ready.Entries))
 		res, err = ps.ApplySnapshot(&ready.Snapshot, kvWB, raftWB)
 		if err != nil {
 			panic(err)
