@@ -76,7 +76,7 @@ func (d *peerMsgHandler) process(kvWB *engine_util.WriteBatch, entry eraftpb.Ent
 	resp := newCmdResp()
 
 	if len(req.Requests) != 0 {
-		// log.Infof("process request %s", req.Requests[0].CmdType.String())
+		log.Infof("process request %s", req.Requests[0].CmdType.String())
 		resp.Responses = make([]*raft_cmdpb.Response, 0)
 		for _, req := range req.Requests {
 			switch req.CmdType {
@@ -119,12 +119,11 @@ func (d *peerMsgHandler) process(kvWB *engine_util.WriteBatch, entry eraftpb.Ent
 	}
 
 	if req.AdminRequest != nil {
-		// log.Infof("%s process %s ", d.Tag, req.AdminRequest.CmdType.String())
+		log.Infof("%s process %s ", d.Tag, req.AdminRequest.CmdType.String())
 		switch req.AdminRequest.CmdType {
 		case raft_cmdpb.AdminCmdType_CompactLog:
 			compact := req.AdminRequest.CompactLog
 			if compact.CompactIndex >= d.peerStorage.truncatedIndex() {
-				// log.Infof("%s process CompactLog cIndex %d,cTerm%d", d.Tag, compact.CompactIndex, compact.CompactTerm)
 				// 在这里只需要修改applyState,applyState会在外层的handleRaftReady中持久化
 				d.peerStorage.applyState.TruncatedState.Index = compact.CompactIndex
 				d.peerStorage.applyState.TruncatedState.Term = compact.CompactTerm
@@ -141,6 +140,8 @@ func (d *peerMsgHandler) process(kvWB *engine_util.WriteBatch, entry eraftpb.Ent
 			log.Panic("not support yet")
 		case raft_cmdpb.AdminCmdType_ChangePeer:
 			log.Panic("not support yet")
+		default:
+			log.Panicf("not support yet")
 		}
 		d.handleProposal(entry, resp, false)
 	}
@@ -235,18 +236,50 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 	}
 	// Your Code Here (2B).
 	// preProposeRaftCommand 已经处理了非Leader的情况
+	resp := newCmdResp()
+	if msg.AdminRequest != nil {
+		switch msg.AdminRequest.CmdType {
+		case raft_cmdpb.AdminCmdType_TransferLeader:
+			// TransferLeader命令不需要被复制,因此不需要propose
+			// 并且此后该节点不再是Leader,不应该走handleRaftReady,因此在这里就要响应cb
+			req := msg.AdminRequest.TransferLeader
+			log.Infof("node %s transfer leader peerId %d, storeId%d", d.Tag, req.Peer.Id, req.Peer.StoreId)
+			d.RaftGroup.TransferLeader(req.Peer.Id)
+			resp.AdminResponse = &raft_cmdpb.AdminResponse{
+				CmdType:        raft_cmdpb.AdminCmdType_TransferLeader,
+				TransferLeader: &raft_cmdpb.TransferLeaderResponse{},
+			}
+			cb.Done(resp)
+			return
+		case raft_cmdpb.AdminCmdType_ChangePeer:
+			req := msg.AdminRequest.ChangePeer
+			d.RaftGroup.ProposeConfChange(eraftpb.ConfChange{
+				ChangeType: req.ChangeType,
+				NodeId:     req.Peer.Id,
+			})
+			d.appendProposal(cb)
+			return
+		default:
+			// do nothing
+		}
+
+	}
 
 	// 把请求序列化为 Entry.Data,交由Raft模块实现一致,等到Raft模块提交后,再统一应用
 	data, err := msg.Marshal()
 	if err != nil {
 		panic(err)
 	}
+	d.appendProposal(cb)
+	d.RaftGroup.Propose(data)
+}
+
+func (d *peerMsgHandler) appendProposal(cb *message.Callback) {
 	d.proposals = append(d.proposals, &proposal{
 		index: d.RaftGroup.Raft.RaftLog.LastIndex() + 1,
 		term:  d.RaftGroup.Raft.Term,
 		cb:    cb, // Apply阶段完毕才算完成,到那时再响应cb
 	})
-	d.RaftGroup.Propose(data)
 }
 
 func (d *peerMsgHandler) onTick() {

@@ -372,6 +372,7 @@ func (r *Raft) becomeCandidate() {
 
 // becomeLeader transform this peer's state to leader
 func (r *Raft) becomeLeader() {
+	log.Infof("raft %d becomeLeader", r.id)
 	// Your Code Here (2A).
 	// NOTE: Leader should propose a noop entry on its term
 	r.Vote = None
@@ -497,6 +498,8 @@ func (r *Raft) stepCandidate(m pb.Message) error {
 		r.handleHeartbeat(m)
 	case pb.MessageType_MsgSnapshot:
 		r.handleSnapshot(m)
+	case pb.MessageType_MsgTimeoutNow:
+		r.Step(pb.Message{MsgType: pb.MessageType_MsgHup})
 	case pb.MessageType_MsgPropose:
 	case pb.MessageType_MsgBeat:
 	case pb.MessageType_MsgTransferLeader:
