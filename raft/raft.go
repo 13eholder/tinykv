@@ -283,6 +283,20 @@ func (r *Raft) sendRequestVote(to uint64) {
 	})
 }
 
+func (r *Raft) sendTimeoutNow(to uint64) {
+	r.msgs = append(r.msgs, pb.Message{
+		MsgType: pb.MessageType_MsgTimeoutNow,
+		From:    r.id,
+		To:      to,
+	})
+}
+
+func (r *Raft) sendToLeader(m pb.Message) {
+	m.From = r.id
+	m.To = r.Lead
+	r.msgs = append(r.msgs, m)
+}
+
 func (r *Raft) bcastHeartBeat() {
 	for to := range r.Prs {
 		if to != r.id {
@@ -341,6 +355,7 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	r.Vote = None
 	r.electionElapsed = 0
 	r.State = StateFollower
+	r.leadTransferee = None
 }
 
 // becomeCandidate transform this peer's state to candidate
@@ -434,6 +449,9 @@ func (r *Raft) stepLeader(m pb.Message) error {
 	case pb.MessageType_MsgAppend:
 		r.handleAppendEntries(m)
 	case pb.MessageType_MsgPropose:
+		if r.leadTransferee != None {
+			return ErrProposalDropped
+		}
 		r.handlePropose(m)
 		if len(r.Prs) == 1 {
 			r.RaftLog.CommitTo(r.RaftLog.LastIndex())
@@ -446,6 +464,10 @@ func (r *Raft) stepLeader(m pb.Message) error {
 		r.handleHeartbeat(m)
 	case pb.MessageType_MsgSnapshot:
 		r.handleSnapshot(m)
+	case pb.MessageType_MsgTransferLeader:
+		r.handleTransferLeader(m)
+	case pb.MessageType_MsgTimeoutNow:
+		r.Step(pb.Message{MsgType: pb.MessageType_MsgHup})
 	case pb.MessageType_MsgRequestVoteResponse:
 	case pb.MessageType_MsgHup:
 		// ignore
@@ -477,6 +499,7 @@ func (r *Raft) stepCandidate(m pb.Message) error {
 		r.handleSnapshot(m)
 	case pb.MessageType_MsgPropose:
 	case pb.MessageType_MsgBeat:
+	case pb.MessageType_MsgTransferLeader:
 		// log.Infof("node %d state %s ignore msg %+v", r.id, r.State.String(), m)
 		// ignore
 	default:
@@ -501,6 +524,13 @@ func (r *Raft) stepFollower(m pb.Message) error {
 		r.handleHeartbeat(m)
 	case pb.MessageType_MsgSnapshot:
 		r.handleSnapshot(m)
+	case pb.MessageType_MsgTimeoutNow:
+		r.Step(pb.Message{MsgType: pb.MessageType_MsgHup})
+	case pb.MessageType_MsgPropose:
+		// 转发给Leader
+		r.sendToLeader(m)
+	case pb.MessageType_MsgTransferLeader:
+		r.handleTransferLeader(m)
 	case pb.MessageType_MsgRequestVoteResponse:
 	case pb.MessageType_MsgAppendResponse:
 	case pb.MessageType_MsgHeartbeatResponse:
@@ -533,6 +563,21 @@ func (r *Raft) countElection() {
 	if denyNum > len(r.Prs)-r.quorum {
 		r.becomeFollower(r.Term, None)
 	}
+}
+
+func (r *Raft) handleTransferLeader(m pb.Message) {
+	// msg不设置Index,Term,因此无需进行检查
+	// transfee向Leader发送该信息
+	if _, ok := r.Prs[m.From]; !ok {
+		return
+	}
+	if m.From == r.id {
+		r.msgs = append(r.msgs, pb.Message{From: r.id, To: r.id, MsgType: pb.MessageType_MsgTimeoutNow})
+		return
+	}
+	r.leadTransferee = m.From
+	// 无论如何都发送Append命令,如果接收者落后,会同步日志,否则可以确认日志同步
+	r.sendAppend(m.From)
 }
 
 // handleAppendEntries handle AppendEntries RPC request
@@ -744,6 +789,19 @@ func (r *Raft) handleAppendResponse(m pb.Message) {
 	}
 	r.Prs[m.From].Match = m.Index
 	r.Prs[m.From].Next = m.Index + 1
+
+	// 需要等待同步,日志不是最新;此时不能进行leaderTransfer
+	if r.updateAndSyncCommitIndex() {
+		return
+	}
+
+	if r.leadTransferee != None {
+		r.sendTimeoutNow(r.leadTransferee)
+	}
+}
+
+// 根据MatchIndex更新CommitIndex,返回是否需要等待同步
+func (r *Raft) updateAndSyncCommitIndex() bool {
 	// 根据MatchIndex更新CommitIndex
 	check := func(index uint64) bool {
 		term, err := r.RaftLog.Term(index)
@@ -767,8 +825,10 @@ func (r *Raft) handleAppendResponse(m pb.Message) {
 		if check(N) {
 			r.RaftLog.CommitTo(N)
 			r.bcastAppend()
+			return true
 		}
 	}
+	return false
 }
 
 func (r *Raft) softState() *SoftState {
@@ -800,9 +860,22 @@ func (r *Raft) advance(rd Ready) {
 // addNode add a new node to raft group
 func (r *Raft) addNode(id uint64) {
 	// Your Code Here (3A).
+	if _, ok := r.Prs[id]; !ok {
+		r.Prs[id] = &Progress{
+			Match: 0,
+			Next:  r.RaftLog.LastIndex() + 1,
+		}
+		r.quorum = len(r.Prs)/2 + 1
+	}
 }
 
 // removeNode remove a node from raft group
 func (r *Raft) removeNode(id uint64) {
 	// Your Code Here (3A).
+	if _, ok := r.Prs[id]; ok {
+		delete(r.Prs, id)
+		r.quorum = len(r.Prs)/2 + 1
+		// 删除节点后,commitIndex可能需要更新
+		r.updateAndSyncCommitIndex()
+	}
 }
