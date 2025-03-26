@@ -102,8 +102,8 @@ project3a:
 project3b:
 	$(TEST_CLEAN)
 	$(GOTEST) ./kv/test_raftstore -run ^TestTransferLeader3B$ || true
-	# $(GOTEST) ./kv/test_raftstore -run ^TestBasicConfChange3B$ || true
-	# $(GOTEST) ./kv/test_raftstore -run ^TestConfChangeRemoveLeader3B$ || true
+	$(GOTEST) ./kv/test_raftstore -run ^TestBasicConfChange3B$ || true
+	$(GOTEST) ./kv/test_raftstore -run ^TestConfChangeRemoveLeader3B$ || true
 	# $(GOTEST) ./kv/test_raftstore -run ^TestConfChangeRecover3B$ || true
 	# $(GOTEST) ./kv/test_raftstore -run ^TestConfChangeRecoverManyClients3B$ || true
 	# $(GOTEST) ./kv/test_raftstore -run ^TestConfChangeUnreliable3B$ || true
