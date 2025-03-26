@@ -2,6 +2,7 @@ package raftstore
 
 import (
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/Connor1996/badger/y"
@@ -52,18 +53,17 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		if err != nil {
 			panic(err)
 		}
-		_ = applySnapResult
 		// 快照影响 region
-		// if applySnapResult != nil {
-		// 	if !reflect.DeepEqual(applySnapResult.PrevRegion, applySnapResult.Region) {
-		// 		d.peerStorage.SetRegion(applySnapResult.Region)
-		// 		d.ctx.storeMeta.Lock()
-		// 		d.ctx.storeMeta.regions[applySnapResult.Region.Id] = applySnapResult.Region
-		// 		d.ctx.storeMeta.regionRanges.Delete(&regionItem{region: applySnapResult.PrevRegion})
-		// 		d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: applySnapResult.Region})
-		// 		d.ctx.storeMeta.Unlock()
-		// 	}
-		// }
+		if applySnapResult != nil {
+			if !reflect.DeepEqual(applySnapResult.PrevRegion, applySnapResult.Region) {
+				d.peerStorage.SetRegion(applySnapResult.Region)
+				d.ctx.storeMeta.Lock()
+				d.ctx.storeMeta.setRegion(applySnapResult.Region, d.peer)
+				d.ctx.storeMeta.regionRanges.Delete(&regionItem{region: applySnapResult.PrevRegion})
+				d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: applySnapResult.Region})
+				d.ctx.storeMeta.Unlock()
+			}
+		}
 		d.Send(d.ctx.trans, rd.Messages)
 		for _, entry := range rd.CommittedEntries {
 			kvWB := new(engine_util.WriteBatch)
@@ -357,14 +357,12 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 			// TransferLeader命令不需要被复制,因此不需要propose
 			// 并且此后该节点不再是Leader,不应该走handleRaftReady,因此在这里就要响应cb
 			req := msg.AdminRequest.TransferLeader
-			log.Infof("%s transfer leader peerId %d, storeId %d", d.Tag, req.Peer.Id, req.Peer.StoreId)
 			d.RaftGroup.TransferLeader(req.Peer.Id)
 			resp.AdminResponse = &raft_cmdpb.AdminResponse{
 				CmdType:        raft_cmdpb.AdminCmdType_TransferLeader,
 				TransferLeader: &raft_cmdpb.TransferLeaderResponse{},
 			}
 			cb.Done(resp)
-			log.Infof("%s transfer leader peerId %d, storeId %d cb done", d.Tag, req.Peer.Id, req.Peer.StoreId)
 			return
 		case raft_cmdpb.AdminCmdType_ChangePeer:
 			req := msg.AdminRequest.ChangePeer
