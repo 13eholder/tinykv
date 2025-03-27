@@ -27,7 +27,7 @@ dev: default test
 test:
 	@echo "Running tests in native mode."
 	@export TZ='Asia/Shanghai'; \
-	LOG_LEVEL=debug $(GOTEST) -cover $(PACKAGES)
+	LOG_LEVEL=fatal $(GOTEST) -cover $(PACKAGES)
 
 CURDIR := $(shell pwd)
 export PATH := $(CURDIR)/bin/:$(PATH)
@@ -101,18 +101,18 @@ project3a:
 
 project3b:
 	$(TEST_CLEAN)
-	$(GOTEST) ./kv/test_raftstore -run ^TestTransferLeader3B$ || true
-	$(GOTEST) ./kv/test_raftstore -run ^TestBasicConfChange3B$ || true
-	$(GOTEST) ./kv/test_raftstore -run ^TestConfChangeRemoveLeader3B$ || true
-	$(GOTEST) ./kv/test_raftstore -run ^TestConfChangeRecover3B$ || true
-	$(GOTEST) ./kv/test_raftstore -run ^TestConfChangeRecoverManyClients3B$ || true
-	$(GOTEST) ./kv/test_raftstore -run ^TestConfChangeUnreliable3B$ || true
-	$(GOTEST) ./kv/test_raftstore -run ^TestConfChangeUnreliableRecover3B$ || true
-	$(GOTEST) ./kv/test_raftstore -run ^TestConfChangeSnapshotUnreliableRecover3B$ || true
-	$(GOTEST) ./kv/test_raftstore -run ^TestConfChangeSnapshotUnreliableRecoverConcurrentPartition3B$ || true
+	# $(GOTEST) ./kv/test_raftstore -run ^TestTransferLeader3B$ || true
+	# $(GOTEST) ./kv/test_raftstore -run ^TestBasicConfChange3B$ || true
+	# $(GOTEST) ./kv/test_raftstore -run ^TestConfChangeRemoveLeader3B$ || true
+	# $(GOTEST) ./kv/test_raftstore -run ^TestConfChangeRecover3B$ || true
+	# $(GOTEST) ./kv/test_raftstore -run ^TestConfChangeRecoverManyClients3B$ || true
+	# $(GOTEST) ./kv/test_raftstore -run ^TestConfChangeUnreliable3B$ || true
+	# $(GOTEST) ./kv/test_raftstore -run ^TestConfChangeUnreliableRecover3B$ || true
+	# $(GOTEST) ./kv/test_raftstore -run ^TestConfChangeSnapshotUnreliableRecover3B$ || true
+	# $(GOTEST) ./kv/test_raftstore -run ^TestConfChangeSnapshotUnreliableRecoverConcurrentPartition3B$ || true
 	# $(GOTEST) ./kv/test_raftstore -run ^TestOneSplit3B$ || true
 	# $(GOTEST) ./kv/test_raftstore -run ^TestSplitRecover3B$ || true
-	# $(GOTEST) ./kv/test_raftstore -run ^TestSplitRecoverManyClients3B$ || true
+	$(GOTEST) ./kv/test_raftstore -run ^TestSplitRecoverManyClients3B$ || true
 	# $(GOTEST) ./kv/test_raftstore -run ^TestSplitUnreliable3B$ || true
 	# $(GOTEST) ./kv/test_raftstore -run ^TestSplitUnreliableRecover3B$ || true
 	# $(GOTEST) ./kv/test_raftstore -run ^TestSplitConfChangeSnapshotUnreliableRecover3B$ || true

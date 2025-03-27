@@ -372,7 +372,7 @@ func (r *Raft) becomeCandidate() {
 
 // becomeLeader transform this peer's state to leader
 func (r *Raft) becomeLeader() {
-	log.Infof("raft %d becomeLeader", r.id)
+	// log.Infof("raft %d becomeLeader", r.id)
 	// Your Code Here (2A).
 	// NOTE: Leader should propose a noop entry on its term
 	r.Vote = None

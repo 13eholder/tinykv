@@ -248,16 +248,99 @@ func (d *peerMsgHandler) process(kvWB *engine_util.WriteBatch, entry eraftpb.Ent
 				CmdType:    raft_cmdpb.AdminCmdType_CompactLog,
 				CompactLog: &raft_cmdpb.CompactLogResponse{},
 			}
-		case raft_cmdpb.AdminCmdType_TransferLeader:
-			log.Panic("not support yet")
+			d.handleProposal(entry, resp, false)
 		case raft_cmdpb.AdminCmdType_Split:
-			log.Panic("not support yet")
-		case raft_cmdpb.AdminCmdType_ChangePeer:
-			log.Panic("not support yet")
+			// 检查region和key
+			// if req.Header.RegionId
+			if req.Header == nil {
+				resp = ErrRespRegionNotFound(d.regionId)
+				d.handleProposal(entry, resp, false)
+				return
+			}
+			if req.Header.RegionId != d.regionId {
+				resp = ErrRespRegionNotFound(d.regionId)
+				d.handleProposal(entry, resp, false)
+				return
+			}
+			if err := util.CheckRegionEpoch(&req, d.Region(), true); err != nil {
+				resp = ErrResp(err)
+				d.handleProposal(entry, resp, false)
+				return
+			}
+			split := req.AdminRequest.Split
+			if err := util.CheckKeyInRegion(split.SplitKey, d.Region()); err != nil {
+				resp = ErrResp(err)
+				d.handleProposal(entry, resp, false)
+				return
+			}
+			if len(split.NewPeerIds) != len(d.peerStorage.region.Peers) {
+				log.Panicf("hh")
+			}
+			// 准备创建peer所需的信息
+			newPeers := make([]*metapb.Peer, 0, len(split.NewPeerIds))
+			for i, p := range d.peerStorage.region.Peers {
+				newPeers = append(newPeers, &metapb.Peer{
+					Id:      split.NewPeerIds[i],
+					StoreId: p.StoreId, // Peer底层使用哪个RaftStore
+				})
+			}
+			// 将 [A,C)拆分为 [A,B),[B,C)
+			newRegion := &metapb.Region{
+				Id:       split.NewRegionId,
+				StartKey: split.SplitKey,
+				EndKey:   d.peerStorage.region.EndKey,
+				RegionEpoch: &metapb.RegionEpoch{
+					ConfVer: 1,
+					Version: 1,
+				},
+				Peers: newPeers,
+			}
+
+			// 创建Peer
+			newPeer, err := createPeer(d.Meta.StoreId,
+				d.ctx.cfg,
+				d.ctx.schedulerTaskSender,
+				d.peerStorage.Engines,
+				newRegion)
+			if err != nil {
+				panic(err)
+			}
+			d.ctx.router.register(newPeer)
+
+			// 修改原有region的元数据
+			d.peerStorage.region.EndKey = split.SplitKey
+			d.peerStorage.region.RegionEpoch.Version++
+
+			// 更新全局元数据
+			d.ctx.storeMeta.Lock()
+			d.ctx.storeMeta.setRegion(newRegion, newPeer)
+			d.ctx.storeMeta.setRegion(d.peerStorage.region, d.peer)
+			d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: newRegion})
+			d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: d.peerStorage.region})
+			d.ctx.storeMeta.Unlock()
+
+			// 更新RegionState
+			meta.WriteRegionState(kvWB, d.peerStorage.region, rspb.PeerState_Normal)
+			meta.WriteRegionState(kvWB, newRegion, rspb.PeerState_Normal)
+
+			// 启动peer,参考raftstore.StartWorkers
+			_ = d.ctx.router.send(newPeer.regionId,
+				message.Msg{RegionID: newPeer.regionId, Type: message.MsgTypeStart})
+
+			resp.AdminResponse = &raft_cmdpb.AdminResponse{
+				CmdType: raft_cmdpb.AdminCmdType_Split,
+				Split: &raft_cmdpb.SplitResponse{
+					Regions: []*metapb.Region{d.peerStorage.region, newRegion},
+				},
+			}
+			d.handleProposal(entry, resp, false)
+
+			// 更新缓存
+			d.notifyHeartbeatScheduler(d.peerStorage.region, d.peer)
+			d.notifyHeartbeatScheduler(newRegion, newPeer)
 		default:
 			log.Panicf("not support yet")
 		}
-		d.handleProposal(entry, resp, false)
 	}
 }
 
@@ -382,6 +465,27 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 			// do nothing
 		}
 
+	}
+
+	// 普通请求,对Key的范围进行检查
+	if len(msg.Requests) == 1 {
+		req := msg.Requests[0]
+		var key []byte
+		switch req.CmdType {
+		case raft_cmdpb.CmdType_Get:
+			key = req.Get.Key
+		case raft_cmdpb.CmdType_Put:
+			key = req.Put.Key
+		case raft_cmdpb.CmdType_Delete:
+			key = req.Delete.Key
+		}
+		err = util.CheckKeyInRegion(key, d.Region())
+		if err != nil && req.CmdType != raft_cmdpb.CmdType_Snap {
+			cb.Done(ErrResp(&util.ErrKeyNotInRegion{Key: key, Region: d.Region()}))
+			return
+		}
+	} else if len(msg.Requests) > 1 {
+		log.Panic("not support batch request")
 	}
 
 	// 把请求序列化为 Entry.Data,交由Raft模块实现一致,等到Raft模块提交后,再统一应用
