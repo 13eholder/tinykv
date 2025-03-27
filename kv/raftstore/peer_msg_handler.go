@@ -298,13 +298,12 @@ func (d *peerMsgHandler) process(kvWB *engine_util.WriteBatch, entry eraftpb.Ent
 			// 创建Peer
 			newPeer, err := createPeer(d.Meta.StoreId,
 				d.ctx.cfg,
-				d.ctx.schedulerTaskSender,
-				d.peerStorage.Engines,
+				d.ctx.regionTaskSender,
+				d.ctx.engine,
 				newRegion)
 			if err != nil {
 				panic(err)
 			}
-			d.ctx.router.register(newPeer)
 
 			// 修改原有region的元数据
 			d.peerStorage.region.EndKey = split.SplitKey
@@ -323,6 +322,7 @@ func (d *peerMsgHandler) process(kvWB *engine_util.WriteBatch, entry eraftpb.Ent
 			meta.WriteRegionState(kvWB, newRegion, rspb.PeerState_Normal)
 
 			// 启动peer,参考raftstore.StartWorkers
+			d.ctx.router.register(newPeer)
 			_ = d.ctx.router.send(newPeer.regionId,
 				message.Msg{RegionID: newPeer.regionId, Type: message.MsgTypeStart})
 
