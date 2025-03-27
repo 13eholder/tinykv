@@ -56,7 +56,6 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		// 快照影响 region
 		if applySnapResult != nil {
 			if !reflect.DeepEqual(applySnapResult.PrevRegion, applySnapResult.Region) {
-				d.peerStorage.SetRegion(applySnapResult.Region)
 				d.ctx.storeMeta.Lock()
 				d.ctx.storeMeta.setRegion(applySnapResult.Region, d.peer)
 				d.ctx.storeMeta.regionRanges.Delete(&regionItem{region: applySnapResult.PrevRegion})

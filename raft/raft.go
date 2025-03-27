@@ -533,7 +533,11 @@ func (r *Raft) stepFollower(m pb.Message) error {
 		// 转发给Leader
 		r.sendToLeader(m)
 	case pb.MessageType_MsgTransferLeader:
-		r.handleTransferLeader(m)
+		// r.handleTransferLeader(m)
+		if r.Lead != None {
+			m.To = r.Lead
+			r.msgs = append(r.msgs, m)
+		}
 	case pb.MessageType_MsgRequestVoteResponse:
 	case pb.MessageType_MsgAppendResponse:
 	case pb.MessageType_MsgHeartbeatResponse:
@@ -786,7 +790,7 @@ func (r *Raft) handleAppendResponse(m pb.Message) {
 	}
 	// 如果拒绝的话,更新Next,重发
 	if m.Reject {
-		r.Prs[m.From].Next--
+		r.Prs[m.From].Next = min(m.Index+1, r.Prs[m.From].Next-1)
 		r.sendAppend(m.From)
 		return
 	}
@@ -866,7 +870,7 @@ func (r *Raft) addNode(id uint64) {
 	if _, ok := r.Prs[id]; !ok {
 		r.Prs[id] = &Progress{
 			Match: 0,
-			Next:  r.RaftLog.LastIndex() + 1,
+			Next:  0, // 直接发快照
 		}
 		r.quorum = len(r.Prs)/2 + 1
 	}
