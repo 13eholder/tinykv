@@ -14,6 +14,8 @@
 package schedulers
 
 import (
+	"sort"
+
 	"github.com/pingcap-incubator/tinykv/scheduler/server/core"
 	"github.com/pingcap-incubator/tinykv/scheduler/server/schedule"
 	"github.com/pingcap-incubator/tinykv/scheduler/server/schedule/operator"
@@ -77,6 +79,75 @@ func (s *balanceRegionScheduler) IsScheduleAllowed(cluster opt.Cluster) bool {
 
 func (s *balanceRegionScheduler) Schedule(cluster opt.Cluster) *operator.Operator {
 	// Your Code Here (3C).
+	suitStores := make([]*core.StoreInfo, 0)
+	for _, store := range cluster.GetStores() {
+		if store.IsUp() && store.DownTime() <= cluster.GetMaxStoreDownTime() {
+			suitStores = append(suitStores, store)
+		}
+	}
 
-	return nil
+	if len(suitStores) == 1 || len(suitStores) == 0 {
+		return nil
+	}
+
+	// 不希望一个store中有太多region,优先调度store.region_size大的
+	sort.Slice(suitStores, func(i, j int) bool {
+		return suitStores[i].GetRegionSize() > suitStores[j].GetRegionSize()
+	})
+
+	var region *core.RegionInfo
+	for _, store := range suitStores {
+		cluster.GetPendingRegionsWithLock(store.GetID(), func(regions core.RegionsContainer) {
+			region = regions.RandomRegion(nil, nil)
+		})
+		if region != nil {
+			break
+		}
+		cluster.GetFollowersWithLock(store.GetID(), func(regions core.RegionsContainer) {
+			region = regions.RandomRegion(nil, nil)
+		})
+		if region != nil {
+			break
+		}
+		cluster.GetLeadersWithLock(store.GetID(), func(regions core.RegionsContainer) {
+			region = regions.RandomRegion(nil, nil)
+		})
+		if region != nil {
+			break
+		}
+	}
+
+	if region == nil {
+		return nil
+	}
+
+	if len(region.GetStoreIds()) < cluster.GetMaxReplicas() {
+		return nil
+	}
+
+	srcStore := suitStores[0]
+	var dstStore *core.StoreInfo
+	for i := len(suitStores) - 1; i >= 0; i-- {
+		// store的peer不能在region中
+		if region.GetStorePeer(suitStores[i].GetID()) == nil {
+			dstStore = suitStores[i]
+			break
+		}
+	}
+	if dstStore == nil {
+		return nil
+	}
+	if srcStore.GetRegionSize()-dstStore.GetRegionSize() <= 2*region.GetApproximateSize() {
+		return nil
+	}
+	newPeer, err := cluster.AllocPeer(dstStore.GetID())
+	if err != nil {
+		panic(err)
+	}
+	// store中不能有太多的region
+	op, err := operator.CreateMovePeerOperator("balance-region", cluster, region, operator.OpBalance, srcStore.GetID(), dstStore.GetID(), newPeer.GetId())
+	if err != nil {
+		panic(err)
+	}
+	return op
 }
