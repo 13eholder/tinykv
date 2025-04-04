@@ -273,7 +273,9 @@ func (d *peerMsgHandler) process(kvWB *engine_util.WriteBatch, entry eraftpb.Ent
 				return
 			}
 			if len(split.NewPeerIds) != len(d.peerStorage.region.Peers) {
-				log.Panicf("hh")
+				resp = ErrResp(errors.New("len(split.NewPeerIds) != len(d.peerStorage.region.Peers)"))
+				d.handleProposal(entry, resp, false)
+				return
 			}
 			// 准备创建peer所需的信息
 			newPeers := make([]*metapb.Peer, 0, len(split.NewPeerIds))
